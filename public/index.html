@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phantom Wallet Details</title>
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.js"></script>
+</head>
+<body>
+    <h1>Check Phantom Wallet Balance</h1>
+    <button id="check-balance">Check Balance</button>
+    <script>
+        document.getElementById('check-balance').addEventListener('click', async () => {
+            if (window.solana && window.solana.isPhantom) {
+                try {
+                    // Connect to Phantom wallet
+                    const response = await window.solana.connect();
+                    const walletAddress = response.publicKey.toString();
+                    console.log('Wallet Address:', walletAddress);
+
+                    // Determine network (devnet or testnet)
+                    const connection = new solanaWeb3.Connection(solanaWeb3.clusterApiUrl('devnet'), 'confirmed');
+                    console.log('Connected to Devnet');
+
+                    // Fetch balance
+                    const publicKey = new solanaWeb3.PublicKey(walletAddress);
+                    const balance = await connection.getBalance(publicKey);
+                    console.log(`Balance: ${balance / solanaWeb3.LAMPORTS_PER_SOL} SOL`);
+                } catch (err) {
+                    console.error('Error connecting to Phantom wallet:', err);
+                }
+            } else {
+                alert('Phantom wallet not found. Please install it.');
+            }
+        });
+    </script>
+</body>
+</html>

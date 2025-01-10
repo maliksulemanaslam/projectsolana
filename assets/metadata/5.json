@@ -1,0 +1,25 @@
+{
+  "name": "Test NFT #5",
+  "symbol": "TEST",
+  "description": "This is a test NFT for Solana devnet.",
+  "seller_fee_basis_points": 500,
+  "image": "5.jpg",
+  "attributes": [
+    { "trait_type": "Health", "value": "80" },
+    { "trait_type": "Power", "value": "90" },
+    { "trait_type": "Energy", "value": "85" }
+  ],
+  "properties": {
+    "category": "image",
+    "files": [
+      {
+        "uri": "5.jpg",
+        "type": "image/jpg"
+      }
+    ]
+  },
+  "collection": {
+    "name": "My Collection",
+    "family": "My NFT Family"
+  }
+}
