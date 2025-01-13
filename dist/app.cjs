@@ -1,20 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 
-// 1) Import Metaplex and add any missing dev dependencies
-const { Metaplex , keypairIdentity} = require("@metaplex-foundation/js");
-const { Keypair, Connection } = require("@solana/web3.js"); // Need Keypair to partialSign
-// const { Keypair } = require("@solana/web3.js");
-
-// -------------------- Log the Candy Machine library version (optional) --------------------
-const candyMachinePkg = require("@metaplex-foundation/mpl-core-candy-machine/package.json");
-console.log("Candy Machine Library Version =>", candyMachinePkg.version);
-
-const {
-  createUmi,
+const { 
+  createUmi, 
+  signerIdentity,
   generateSigner,
   transactionBuilder,
-  signerIdentity,
   some,
   sol,
   publicKey
@@ -27,66 +18,56 @@ const {
   create,
   addConfigLines,
 } = require("@metaplex-foundation/mpl-core-candy-machine");
+
 const { toWeb3JsTransaction } = require("@metaplex-foundation/umi-web3js-adapters");
 const { setComputeUnitLimit } = require("@metaplex-foundation/mpl-toolbox");
-// const { Connection } = require("@solana/web3.js");
+const { Keypair, PublicKey, VersionedTransaction, TransactionMessage } = require("@solana/web3.js");
+const fs = require("fs");
+const path = require("path");
 
-// 1) Create a Umi instance & set a server identity
+// 1) Umi instance on devnet
 const umi = createUmiBundleDefaults("https://api.devnet.solana.com")
-  // .use(signerIdentity(generateSigner))
   .use(mplCandyMachine());
 
-const serverKeypair = generateSigner(umi);
-umi.use(signerIdentity(serverKeypair));
-console.log("Server Keypair =>", serverKeypair);
+// 2) Load a JSON array from a local file
+const keypairPath = path.join(__dirname, "PhantomWallet.json"); 
+const rawData = fs.readFileSync(keypairPath, "utf8"); // e.g. "[135,52, ... ,22]"
+const secretKeyArray = JSON.parse(rawData); // convert JSON string -> array
 
-// Use that serverKeypair as the authority signer identity
-umi.use(signerIdentity(serverKeypair));
+// 3) Convert array -> Uint8Array
+const secretKey = Uint8Array.from(secretKeyArray);
 
-console.log("Server Identity Pubkey =>", serverKeypair.publicKey.toString());
+// 4) Now fromSecretKey(...) is valid
+const serverKeypair = Keypair.fromSecretKey(secretKey);
+// Then wrap in a Umi-compatible Signer if needed:
+const serverUmiSigner = {
+  publicKey: publicKey(serverKeypair.publicKey),
+  secretKey: Uint8Array.from(serverKeypair.secretKey),
+};
 
-// Store references to new Candy Machine and collection
-let newCandyMachine;
-let newCollectionMint;
+// 5) Let Umi know the server is the authority signer
+umi.use(signerIdentity(serverUmiSigner));
 
-/**
- * Build & serialize the Candy Machine creation transaction
- */
 async function buildAndSerializeCandyMachineTx({ phantomWalletPubkey }) {
   try {
-    console.log("Incoming phantomWalletPubkey =>", phantomWalletPubkey);
-
     if (!phantomWalletPubkey) {
       throw new Error("phantomWalletPubkey is missing or undefined!");
     }
+    const phantomPayerPk = new PublicKey(phantomWalletPubkey);
 
-    const phantomPayerPk = publicKey(phantomWalletPubkey);
-    console.log("Parsed phantomPayerPk =>", phantomPayerPk.toString());
+    // Log the public key being used
+    console.log("Phantom Payer Public Key:", phantomPayerPk.toString());
 
-    // Generate new signers
+    // Candy Machine and Collection signers
     const candyMachineSigner = generateSigner(umi);
     const collectionMintSigner = generateSigner(umi);
-    console.log("Candy Machine Pubkey =>", candyMachineSigner.publicKey.toString());
-    console.log("Collection Mint Pubkey =>", collectionMintSigner.publicKey.toString());
 
-    // Fetch a blockhash
-    const connection = new Connection("https://api.devnet.solana.com", "confirmed");
-    const { blockhash } = await connection.getLatestBlockhash();
-    console.log("Fetched blockhash =>", blockhash);
-
-    // Additional logs
-    console.log("Candy Machine authority =>", serverKeypair.publicKey.toString());
-    console.log("Candy Machine collectionUpdateAuthority =>", serverKeypair.publicKey.toString());
-    const solPaymentDestination = serverKeypair.publicKey;
-    console.log("Candy Machine solPayment destination =>", solPaymentDestination.toString());
-
-    // Prepare Candy Machine creation instructions
+    // Build the Candy Machine instructions
     const createBuilder = await create(umi, {
       candyMachine: candyMachineSigner,
       collection: collectionMintSigner.publicKey,
-      collectionUpdateAuthority: serverKeypair.publicKey,
-      authority: serverKeypair.publicKey,
-      payer: phantomPayerPk,  
+      collectionUpdateAuthority: serverUmiSigner.publicKey,
+      authority: serverUmiSigner.publicKey,
       itemsAvailable: 10,
       isMutable: false,
       configLineSettings: some({
@@ -99,14 +80,13 @@ async function buildAndSerializeCandyMachineTx({ phantomWalletPubkey }) {
       guards: {
         botTax: some({ lamports: sol(0.001), lastInstruction: true }),
         solPayment: some({
-          lamports: sol(1.0),
-          destination: solPaymentDestination,
+          lamports: sol(1),
+          destination: serverUmiSigner.publicKey,
         }),
       },
     });
 
-    // Optionally, add config lines
-    console.log("addConfigLines CandyMachine =>", candyMachineSigner.publicKey.toString());
+    // Optionally add config lines
     const configLinesBuilder = await addConfigLines(umi, {
       candyMachine: candyMachineSigner.publicKey,
       index: 0,
@@ -116,77 +96,61 @@ async function buildAndSerializeCandyMachineTx({ phantomWalletPubkey }) {
       ],
     });
 
-    // --------------------------------------------------------------------
-    // Key Change: Instead of using .setFeePayer(phantomPayerPk),
-    // use the serverKeypair so the server covers transaction fees.
-    // --------------------------------------------------------------------
+    // Build the transaction
     const combinedBuilder = transactionBuilder()
       .add(createBuilder)
       .add(configLinesBuilder)
       .add(setComputeUnitLimit(umi, { units: 800_000 }));
 
-    console.log("Building transaction now...");
     const builtTx = await combinedBuilder.buildWithLatestBlockhash(umi);
-    console.log("Transaction built successfully");
 
-     // Convert to a VersionedTransaction
-     const web3Tx = toWeb3JsTransaction(builtTx);
+    // Convert to a VersionedTransaction
+    let web3Tx = toWeb3JsTransaction(builtTx);
 
-      // The server is the Candy Machine authority => we partialSign as authority using the standard @solana/web3.js Keypair
-      const serverKeypairWeb3 = Keypair.fromSecretKey(serverKeypair.secretKey);
-      web3Tx.sign([serverKeypairWeb3]);
-     
-         // Now the transaction includes the server's signature, but still needs the Phantom fee payer signature
-         const serialized = Buffer.from(
-           web3Tx.serialize({ requireAllSignatures: false })
-         ).toString("base64");
-     
-    // // Convert to web3.js Transaction & serialize
-    // const web3Tx = toWeb3JsTransaction(builtTx);
-    // const serialized = Buffer.from(
-    //   web3Tx.serialize({ requireAllSignatures: false })
-    // ).toString("base64");
+    // Log the transaction before signing
+    console.log("Transaction before signing:", web3Tx);
 
-    // Store references
-    newCandyMachine = candyMachineSigner;
-    newCollectionMint = collectionMintSigner;
+    // The server partial-signs as authority
+    const serverKeypairWeb3 = serverKeypair; // Already a Keypair
+    web3Tx.sign([serverKeypairWeb3]);
 
-    console.log("Candy Machine creation transaction built & serialized successfully");
-    return { serialized };
+    // Log the transaction after signing
+    console.log("Transaction after signing:", web3Tx);
+
+    // Recompile the transaction with "payerKey = phantomPayerPk"
+    const originalMsg = TransactionMessage.decompile(web3Tx.message);
+    const userMsg = new TransactionMessage({
+      payerKey: phantomPayerPk,
+      recentBlockhash: builtTx.blockhash,
+      instructions: originalMsg.instructions,
+    }).compileToV0Message();
+
+    let versionedTransaction = new VersionedTransaction(userMsg);
+
+    // Re-sign with server authority
+    versionedTransaction.sign([serverKeypairWeb3]);
+
+    // Log the final transaction
+    console.log("Final Versioned Transaction:", versionedTransaction);
+
+    // Serialize for the client
+    const serialized = Buffer.from(
+      versionedTransaction.serialize({ requireAllSignatures: false })
+    ).toString("base64");
+
+    // Log the serialized transaction
+    console.log("Serialized Transaction (Base64):", serialized);
+
+    return {
+      message: "Candy Machine transaction built, user set as fee payer",
+      transaction: serialized,
+    };
   } catch (error) {
-    console.error("Error in buildAndSerializeCandyMachineTx:", error);
+    console.error("Error building Candy Machine creation transaction:", error);
     throw error;
   }
 }
 
-// Create a second connection just for Metaplex demo 
-const connection = new Connection("https://api.devnet.solana.com", "confirmed");
-const walletKeypair = Keypair.generate(); // or load from file
-
-// Initialize Metaplex
-const metaplex = Metaplex.make(connection)
-  .use(keypairIdentity(walletKeypair));
-
-async function createCandyMachineViaMetaplex() {
-  // Example from the Metaplex docs
-  try {
-    const { candyMachine, transactionId } = await metaplex
-      .candyMachines()
-      .create({
-        itemsAvailable: 10,
-        sellerFeeBasisPoints: 500,
-        // other Candy Machine options...
-      });
-
-    console.log("Created Candy Machine:", candyMachine.address.toBase58());
-    console.log("Transaction ID:", transactionId);
-  } catch (e) {
-    console.error("Error in createCandyMachineViaMetaplex =>", e);
-  }
-}
-
-// 2) Export it if you want to call from server.js
 module.exports = {
-  buildAndSerializeCandyMachineTx, // your existing Umi-based function
-  createCandyMachineViaMetaplex,   // the new Metaplex-based function
+  buildAndSerializeCandyMachineTx
 };
