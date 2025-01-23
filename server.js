@@ -3,7 +3,8 @@ const path = require('path');
 const bodyParser = require('body-parser');
 const {
   buildAndSerializeCandyMachineTx,
-  createCandyMachineViaMetaplex
+  createCandyMachineViaMetaplex,
+  mintCandyMachineNft,
 } = require('./dist/app.cjs');
 
 const app = express();
@@ -41,7 +42,22 @@ app.post('/create-candy-machine', async (req, res) => {
     });
   }
 });
+// NEW: Mint from Candy Machine endpoint
+app.post("/mint-candy-machine", async (req, res) => {
+  try {
+    const { userPubkey } = req.body;
+    console.log("Incoming userPubkey =>", userPubkey);
 
+    const minted = await mintCandyMachineNft({ phantomWalletPubkey: userPubkey });
+    res.json(minted);
+  } catch (error) {
+    console.error("Minting from Candy Machine failed:", error);
+    res.status(500).json({
+      error: "Minting from Candy Machine failed",
+      details: error.message,
+    });
+  }
+});
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });
